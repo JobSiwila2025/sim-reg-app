@@ -344,13 +344,7 @@ function App() {
       </div>
 
       {message && (
-        <div className={
-          message.toLowerCase().includes('success')
-            ? 'p-4 border rounded-xl mt-4 bg-emerald-200/20 border-emerald-400 text-emerald-100'
-            : message.toLowerCase().includes('error') || message.toLowerCase().includes('failed')
-              ? 'p-4 border rounded-xl mt-4 bg-rose-200/20 border-rose-400 text-rose-100'
-              : 'p-4 border rounded-xl mt-4 bg-sky-200/20 border-sky-400 text-sky-100'
-        }>
+        <div className="p-4 rounded-xl mt-4 bg-green-600 text-white font-bold text-center shadow-lg border border-green-400">
           {message}
         </div>
       )}
