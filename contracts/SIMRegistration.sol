@@ -74,6 +74,7 @@ contract SIMRegistration {
         simRecords[_simHash] = newRecord;
         registeredSIMs[_simHash] = true;
         userRegistrations[msg.sender] = _simHash;
+        registrationCount++;
 
         // Emit registration event
         emit SIMRegistered(_simHash, msg.sender, block.timestamp);
@@ -131,8 +132,6 @@ contract SIMRegistration {
      * @return uint256 Number of registered SIMs
      */
     function getTotalRegistrations() external view returns (uint256) {
-        // Note: In production, consider using a counter variable for gas efficiency
-        // This implementation is for demonstration; counting mappings is expensive
-        return 0; // Placeholder - would need proper implementation
+        return registrationCount;
     }
 }
