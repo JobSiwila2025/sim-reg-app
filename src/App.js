@@ -248,8 +248,8 @@ function App() {
         </div>
       )}
 
-      {/* SIM Registration Form - only show if no existing registration */}
-      {!userRegistration && (
+      {/* SIM Registration Form - only show if no active registration */}
+      {(!userRegistration || !userRegistration.isActive) && (
       <div className="registration-section">
         <h3>Register New SIM</h3>
         <form onSubmit={handleSubmit}>
