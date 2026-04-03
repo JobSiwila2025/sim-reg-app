@@ -5,14 +5,13 @@
 // University     : ZCAS University Zambia
 // ============================================================
 
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ethers } from 'ethers';
 import simContractABI from './SimContractABI.json';
 import './App.css';
 
-// Replace this with your deployed smart contract address
 const contractAddress = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+const HARDHAT_CHAIN_ID = '0x7a69'; // 31337 in hex
 
 function App() {
   const [walletAddress, setWalletAddress] = useState('');
@@ -20,20 +19,61 @@ function App() {
   const [idNumber, setIdNumber] = useState('');
   const [simNumber, setSimNumber] = useState('');
   const [message, setMessage] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
   const [userRegistration, setUserRegistration] = useState(null);
   const [checkSIM, setCheckSIM] = useState('');
   const [simStatus, setSimStatus] = useState(null);
   const [registrationCount, setRegistrationCount] = useState(0);
+  const [wrongNetwork, setWrongNetwork] = useState(false);
 
-  // Load user's registration when wallet connects
-  const loadUserRegistration = async () => {
+  // Separate loading states so one operation doesn't block the whole UI
+  const [loadingWallet, setLoadingWallet] = useState(false);
+  const [loadingRegister, setLoadingRegister] = useState(false);
+  const [loadingCheck, setLoadingCheck] = useState(false);
+  const [loadingDeactivate, setLoadingDeactivate] = useState(false);
+
+  // Reusable provider and contract — created once, not on every call
+  const providerRef = useRef(null);
+  const contractRef = useRef(null);
+
+  const getProvider = useCallback(() => {
+    if (!window.ethereum) return null;
+    if (!providerRef.current) {
+      providerRef.current = new ethers.BrowserProvider(window.ethereum);
+    }
+    return providerRef.current;
+  }, []);
+
+  const getContract = useCallback((signerOrProvider) => {
+    return new ethers.Contract(contractAddress, simContractABI, signerOrProvider);
+  }, []);
+
+  // Reset provider cache when account or network changes
+  const resetProvider = useCallback(() => {
+    providerRef.current = null;
+    contractRef.current = null;
+  }, []);
+
+  const checkNetwork = useCallback(async () => {
+    if (!window.ethereum) return false;
+    const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+    const isCorrect = chainId === HARDHAT_CHAIN_ID;
+    setWrongNetwork(!isCorrect);
+    return isCorrect;
+  }, []);
+
+  const loadUserRegistration = useCallback(async () => {
     try {
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const contract = new ethers.Contract(contractAddress, simContractABI, provider);
-    const count = await contract.registrationCount();
-    setRegistrationCount(Number(count));
-      const userSIMHash = await contract.getMyRegistration();
+      const provider = getProvider();
+      if (!provider) return;
+
+      const contract = getContract(provider);
+      const count = await contract.registrationCount();
+      setRegistrationCount(Number(count));
+
+      const signer = await provider.getSigner();
+      const connectedContract = getContract(signer);
+      const userSIMHash = await connectedContract.getMyRegistration();
+
       if (userSIMHash !== ethers.ZeroHash) {
         const details = await contract.getSIMDetails(userSIMHash);
         setUserRegistration({
@@ -49,34 +89,75 @@ function App() {
       console.error('Error loading registration:', err);
       setUserRegistration(null);
     }
-  };
+  }, [getProvider, getContract]);
 
+  // Load data when wallet connects
   useEffect(() => {
     if (walletAddress) {
       loadUserRegistration();
     }
-  }, [walletAddress]);
+  }, [walletAddress, loadUserRegistration]);
 
-  // Connect MetaMask wallet
-  const connectWallet = async () => {
-    if (window.ethereum) {
-      try {
-        setIsLoading(true);
-        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+  // Listen for MetaMask account and network changes
+  useEffect(() => {
+    if (!window.ethereum) return;
+
+    const handleAccountsChanged = (accounts) => {
+      resetProvider();
+      if (accounts.length === 0) {
+        setWalletAddress('');
+        setUserRegistration(null);
+        setMessage('Wallet disconnected');
+      } else {
         setWalletAddress(accounts[0]);
-        setMessage('Wallet connected: ' + accounts[0]);
-      } catch (err) {
-        console.error(err);
-        setMessage('Wallet connection failed');
-      } finally {
-        setIsLoading(false);
+        setMessage('Switched to: ' + accounts[0]);
       }
-    } else {
-      setMessage('MetaMask not detected');
+      setSimStatus(null);
+    };
+
+    const handleChainChanged = () => {
+      resetProvider();
+      checkNetwork();
+      if (walletAddress) {
+        loadUserRegistration();
+      }
+    };
+
+    window.ethereum.on('accountsChanged', handleAccountsChanged);
+    window.ethereum.on('chainChanged', handleChainChanged);
+
+    return () => {
+      window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+      window.ethereum.removeListener('chainChanged', handleChainChanged);
+    };
+  }, [walletAddress, resetProvider, checkNetwork, loadUserRegistration]);
+
+  const connectWallet = async () => {
+    if (!window.ethereum) {
+      setMessage('MetaMask not detected. Please install it to use this app.');
+      return;
+    }
+
+    try {
+      setLoadingWallet(true);
+
+      const onCorrectNetwork = await checkNetwork();
+      if (!onCorrectNetwork) {
+        setMessage('Please switch MetaMask to the Hardhat network (Chain ID 31337)');
+        return;
+      }
+
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      setWalletAddress(accounts[0]);
+      setMessage('Wallet connected: ' + accounts[0]);
+    } catch (err) {
+      console.error(err);
+      setMessage('Wallet connection failed');
+    } finally {
+      setLoadingWallet(false);
     }
   };
 
-  // Check SIM registration status
   const checkSIMStatus = async () => {
     if (!checkSIM.trim()) {
       setMessage('Please enter a SIM number to check');
@@ -84,10 +165,11 @@ function App() {
     }
 
     try {
-      setIsLoading(true);
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const contract = new ethers.Contract(contractAddress, simContractABI, provider);
+      setLoadingCheck(true);
+      const provider = getProvider();
+      if (!provider) return;
 
+      const contract = getContract(provider);
       const simHash = ethers.keccak256(ethers.toUtf8Bytes(checkSIM.trim()));
       const isRegistered = await contract.isSIMRegistered(simHash);
 
@@ -109,11 +191,10 @@ function App() {
       console.error(err);
       setMessage('Error checking SIM status');
     } finally {
-      setIsLoading(false);
+      setLoadingCheck(false);
     }
   };
 
-  // Deactivate user's SIM
   const deactivateSIM = async () => {
     if (!userRegistration) {
       setMessage('No registration found to deactivate');
@@ -121,12 +202,12 @@ function App() {
     }
 
     try {
-      setIsLoading(true);
+      setLoadingDeactivate(true);
       setMessage('Deactivating SIM...');
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = getProvider();
       const signer = await provider.getSigner();
-      const contract = new ethers.Contract(contractAddress, simContractABI, signer);
+      const contract = getContract(signer);
 
       const tx = await contract.deactivateSIM(userRegistration.simHash);
       setMessage('Deactivation transaction sent... waiting for confirmation');
@@ -138,11 +219,10 @@ function App() {
       console.error(err);
       setMessage('Error deactivating SIM: ' + (err.reason || err.message));
     } finally {
-      setIsLoading(false);
+      setLoadingDeactivate(false);
     }
   };
 
-  // Handle SIM registration form submit
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -157,26 +237,23 @@ function App() {
     }
 
     try {
-      setIsLoading(true);
+      setLoadingRegister(true);
       setMessage('Processing...');
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = getProvider();
       const signer = await provider.getSigner();
-      const contract = new ethers.Contract(contractAddress, simContractABI, signer);
+      const contract = getContract(signer);
 
-      // Hash sensitive data
       const nameHash = ethers.keccak256(ethers.toUtf8Bytes(name));
       const idHash = ethers.keccak256(ethers.toUtf8Bytes(idNumber));
       const simHash = ethers.keccak256(ethers.toUtf8Bytes(simNumber));
 
-      // Call smart contract function
       const tx = await contract.registerSIM(nameHash, idHash, simHash);
       setMessage('Transaction sent... waiting for confirmation');
 
-      await tx.wait(); // Wait for blockchain confirmation
+      await tx.wait();
       setMessage('SIM registered successfully on blockchain!');
 
-      // Clear form and reload user data
       setName('');
       setIdNumber('');
       setSimNumber('');
@@ -189,21 +266,29 @@ function App() {
         setMessage('Error submitting transaction: ' + err.message);
       }
     } finally {
-      setIsLoading(false);
+      setLoadingRegister(false);
     }
   };
+
+  const hasActiveRegistration = userRegistration && userRegistration.isActive;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-cyan-950 text-white p-6">
       <div className="max-w-4xl mx-auto space-y-6">
         <header className="text-center">
           <h1 className="text-3xl md:text-5xl font-bold tracking-tight mb-2 flex items-center justify-center">
-            <span className="mr-2">🔐</span> Decentralized SIM Registration <span className="ml-2">📱</span>
+            <span className="mr-2">🔐</span> Decentralized SIM Registration and Identity Audit Log System <span className="ml-2">📱</span>
           </h1>
           <p className="text-slate-300 flex items-center justify-center">
             <span className="mr-2">🛡️</span> Secure SIM registration with blockchain verification and privacy-preserving hashing. <span className="ml-2">🔍</span>
           </p>
         </header>
+
+        {wrongNetwork && (
+          <div className="p-4 border rounded-xl bg-amber-200/20 border-amber-400 text-amber-100 text-center">
+            Wrong network detected. Please switch MetaMask to <strong>Hardhat (Chain ID 31337)</strong>.
+          </div>
+        )}
 
         <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-5 shadow-xl backdrop-blur text-center">
           <h3 className="text-lg font-semibold mb-2">📊 System Statistics</h3>
@@ -212,150 +297,154 @@ function App() {
         </div>
 
         <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-5 shadow-xl backdrop-blur">
-        <button 
-          className="connect-button"
-          onClick={connectWallet} 
-          disabled={isLoading}
-        >
-          {isLoading && <span className="loading-spinner"></span>}
-          {isLoading ? 'Connecting...' : walletAddress ? 'Wallet Connected' : 'Connect Wallet'}
-        </button>
-
-        {walletAddress && (
-          <div className="wallet-info">
-            <p><strong>Connected:</strong> {walletAddress}</p>
-          </div>
-        )}
-      </div>
-
-      {/* User Registration Status */}
-      {userRegistration && (
-        <div className="status-section">
-          <h3>Your Registration</h3>
-          <div className={`status-display ${userRegistration.isActive ? 'status-active' : 'status-inactive'}`}>
-            <p><strong>Status:</strong> {userRegistration.isActive ? 'Active' : 'Inactive'}</p>
-            <p><strong>Registered:</strong> {new Date(Number(userRegistration.timestamp) * 1000).toLocaleString()}</p>
-          </div>
-          <button 
-            className="submit-button"
-            onClick={deactivateSIM}
-            disabled={isLoading || !userRegistration.isActive}
-            style={{ marginTop: '10px', width: 'auto' }}
+          <button
+            className="connect-button"
+            onClick={connectWallet}
+            disabled={loadingWallet}
           >
-            {isLoading && <span className="loading-spinner"></span>}
-            {isLoading ? 'Processing...' : 'Deactivate SIM'}
+            {loadingWallet && <span className="loading-spinner"></span>}
+            {loadingWallet ? 'Connecting...' : walletAddress ? 'Wallet Connected' : 'Connect Wallet'}
           </button>
-        </div>
-      )}
 
-      {/* SIM Registration Form */}
-      <div className="registration-section">
-        <h3>Register New SIM</h3>
-        <form onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label className="form-label">Full Name</label>
-            <input
-              type="text"
-              className="form-input"
-              placeholder="Enter your full name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={isLoading}
-              required
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">National ID</label>
-            <input
-              type="text"
-              className="form-input"
-              placeholder="Enter your national ID"
-              value={idNumber}
-              onChange={(e) => setIdNumber(e.target.value)}
-              disabled={isLoading}
-              required
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">SIM Number</label>
-            <input
-              type="text"
-              className="form-input"
-              placeholder="Enter your SIM number"
-              value={simNumber}
-              onChange={(e) => setSimNumber(e.target.value)}
-              disabled={isLoading}
-              required
-            />
-          </div>
-
-          <button 
-            type="submit" 
-            className="submit-button"
-            disabled={isLoading}
-          >
-            {isLoading && <span className="loading-spinner"></span>}
-            {isLoading ? 'Processing...' : 'Register SIM'}
-          </button>
-        </form>
-      </div>
-
-      {/* Check SIM Status */}
-      <div className="check-section">
-        <h3>Check SIM Status</h3>
-        <div className="check-input-group">
-          <input
-            type="text"
-            className="check-input"
-            placeholder="Enter SIM Number"
-            value={checkSIM}
-            onChange={(e) => setCheckSIM(e.target.value)}
-            disabled={isLoading}
-          />
-          <button 
-            className="check-button"
-            onClick={checkSIMStatus}
-            disabled={isLoading}
-          >
-            {isLoading && <span className="loading-spinner"></span>}
-            {isLoading ? 'Checking...' : 'Check Status'}
-          </button>
+          {walletAddress && (
+            <div className="wallet-info">
+              <p><strong>Connected:</strong> {walletAddress}</p>
+            </div>
+          )}
         </div>
 
-        {simStatus && (
-          <div className={
-            simStatus.isRegistered
-              ? (simStatus.isActive ? 'status-display status-active' : 'status-display status-inactive')
-              : 'status-display status-info'
-          }>
-            {simStatus.isRegistered ? (
-              <div>
-                <p><strong>Status:</strong> {simStatus.isActive ? 'Active' : 'Inactive'}</p>
-                <p><strong>Registrant:</strong> {simStatus.registrant}</p>
-                <p><strong>Registered:</strong> {new Date(Number(simStatus.timestamp) * 1000).toLocaleString()}</p>
-              </div>
-            ) : (
-              <p>This SIM is not registered</p>
+        {/* User Registration Status */}
+        {userRegistration && (
+          <div className="status-section">
+            <h3>Your Registration</h3>
+            <div className={`status-display ${userRegistration.isActive ? 'status-active' : 'status-inactive'}`}>
+              <p><strong>Status:</strong> {userRegistration.isActive ? 'Active' : 'Inactive'}</p>
+              <p><strong>Registered:</strong> {new Date(Number(userRegistration.timestamp) * 1000).toLocaleString()}</p>
+            </div>
+            {userRegistration.isActive && (
+              <button
+                className="submit-button"
+                onClick={deactivateSIM}
+                disabled={loadingDeactivate}
+                style={{ marginTop: '10px', width: 'auto' }}
+              >
+                {loadingDeactivate && <span className="loading-spinner"></span>}
+                {loadingDeactivate ? 'Processing...' : 'Deactivate SIM'}
+              </button>
             )}
           </div>
         )}
-      </div>
 
-      {message && (
-        <div className={
-          message.toLowerCase().includes('success')
-            ? 'p-4 border rounded-xl mt-4 bg-emerald-200/20 border-emerald-400 text-emerald-100'
-            : message.toLowerCase().includes('error') || message.toLowerCase().includes('failed')
-              ? 'p-4 border rounded-xl mt-4 bg-rose-200/20 border-rose-400 text-rose-100'
-              : 'p-4 border rounded-xl mt-4 bg-sky-200/20 border-sky-400 text-sky-100'
-        }>
-          {message}
+        {/* Only show form if the user hasn't registered yet */}
+        {!hasActiveRegistration && (
+          <div className="registration-section">
+            <h3>Register New SIM</h3>
+            <form onSubmit={handleSubmit}>
+              <div className="form-group">
+                <label className="form-label">Full Name</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="Enter your full name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  disabled={loadingRegister}
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">National ID</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="Enter your national ID"
+                  value={idNumber}
+                  onChange={(e) => setIdNumber(e.target.value)}
+                  disabled={loadingRegister}
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">SIM Number</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="Enter your SIM number"
+                  value={simNumber}
+                  onChange={(e) => setSimNumber(e.target.value)}
+                  disabled={loadingRegister}
+                  required
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="submit-button"
+                disabled={loadingRegister || !walletAddress}
+              >
+                {loadingRegister && <span className="loading-spinner"></span>}
+                {loadingRegister ? 'Processing...' : 'Register SIM'}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* Check SIM Status */}
+        <div className="check-section">
+          <h3>Check SIM Status</h3>
+          <div className="check-input-group">
+            <input
+              type="text"
+              className="check-input"
+              placeholder="Enter SIM Number"
+              value={checkSIM}
+              onChange={(e) => setCheckSIM(e.target.value)}
+              disabled={loadingCheck}
+            />
+            <button
+              className="check-button"
+              onClick={checkSIMStatus}
+              disabled={loadingCheck}
+            >
+              {loadingCheck && <span className="loading-spinner"></span>}
+              {loadingCheck ? 'Checking...' : 'Check Status'}
+            </button>
+          </div>
+
+          {simStatus && (
+            <div className={
+              simStatus.isRegistered
+                ? (simStatus.isActive ? 'status-display status-active' : 'status-display status-inactive')
+                : 'status-display status-info'
+            }>
+              {simStatus.isRegistered ? (
+                <div>
+                  <p><strong>Status:</strong> {simStatus.isActive ? 'Active' : 'Inactive'}</p>
+                  <p><strong>Registrant:</strong> {simStatus.registrant}</p>
+                  <p><strong>Registered:</strong> {new Date(Number(simStatus.timestamp) * 1000).toLocaleString()}</p>
+                </div>
+              ) : (
+                <p>This SIM is not registered</p>
+              )}
+            </div>
+          )}
         </div>
-      )}
+
+        {message && (
+          <div className={
+            message.toLowerCase().includes('success')
+              ? 'p-4 border rounded-xl mt-4 bg-emerald-200/20 border-emerald-400 text-emerald-100'
+              : message.toLowerCase().includes('error') || message.toLowerCase().includes('failed')
+                ? 'p-4 border rounded-xl mt-4 bg-rose-200/20 border-rose-400 text-rose-100'
+                : 'p-4 border rounded-xl mt-4 bg-sky-200/20 border-sky-400 text-sky-100'
+          }>
+            {message}
+          </div>
+        )}
+      </div>
     </div>
-  </div>
   );
 }
 
