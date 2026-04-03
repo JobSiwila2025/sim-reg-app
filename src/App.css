@@ -148,8 +148,10 @@
 }
 
 .status-info {
-  background-color: #e3f2fd;
-  border: 1px solid #2196F3;
+  background-color: #3b82f6 !important;
+  border: 2px solid #1d4ed8;
+  color: white !important;
+  font-weight: bold;
 }
 
 .check-section {
