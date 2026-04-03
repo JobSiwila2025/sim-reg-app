@@ -123,6 +123,7 @@ contract SIMRegistration {
         require(simRecords[_simHash].isActive, "SIM already inactive");
 
         simRecords[_simHash].isActive = false;
+        userRegistrations[msg.sender] = bytes32(0); // Clear user registration so they can re-register
         emit SIMStatusUpdated(_simHash, false, block.timestamp);
     }
 
