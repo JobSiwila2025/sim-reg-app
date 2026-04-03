@@ -198,7 +198,7 @@ function App() {
       <div className="max-w-4xl mx-auto space-y-6">
         <header className="text-center">
           <h1 className="text-3xl md:text-5xl font-bold tracking-tight mb-2 flex items-center justify-center">
-            <span className="mr-2">🔐</span> Decentralized SIM Registration <span className="ml-2">📱</span>
+            <span className="mr-2">🔐</span> Decentralized SIM Registration & Identity Audit Log System <span className="ml-2">📱</span>
           </h1>
           <p className="text-slate-300 flex items-center justify-center">
             <span className="mr-2">🛡️</span> Secure SIM registration with blockchain verification and privacy-preserving hashing. <span className="ml-2">🔍</span>
