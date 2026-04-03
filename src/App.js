@@ -248,7 +248,8 @@ function App() {
         </div>
       )}
 
-      {/* SIM Registration Form */}
+      {/* SIM Registration Form - only show if no existing registration */}
+      {!userRegistration && (
       <div className="registration-section">
         <h3>Register New SIM</h3>
         <form onSubmit={handleSubmit}>
@@ -301,6 +302,7 @@ function App() {
           </button>
         </form>
       </div>
+      )}
 
       {/* Check SIM Status */}
       <div className="check-section">
